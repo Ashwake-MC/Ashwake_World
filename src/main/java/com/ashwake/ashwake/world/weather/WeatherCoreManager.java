@@ -1,5 +1,6 @@
 package com.ashwake.ashwake.world.weather;
 
+import com.ashwake.api.WeatherCoreSnapshot;
 import com.ashwake.ashwake.AshwakeMod;
 import com.ashwake.ashwake.config.AshwakeConfig;
 import com.ashwake.ashwake.network.WeatherCoreNetwork;
@@ -170,7 +171,7 @@ public final class WeatherCoreManager {
         WeatherCoreSavedData data = WeatherCoreSavedData.get(level);
 
         if (!data.isInitialized()) {
-            WeatherCoreState initial = rollNextState(level, settings, null);
+            WeatherCoreState initial = rollNextState(level, settings, null, null);
             startState(level, worldData, settings, data, initial, null);
             AshwakeMod.LOGGER.info("Ashwake Weather Core initialized with state {}", initial.id());
         }
@@ -210,7 +211,8 @@ public final class WeatherCoreManager {
             return;
         }
 
-        WeatherCoreState next = rollNextState(level, settings, data.getCurrentState());
+        WeatherCoreSnapshot previousSnapshot = WeatherCoreApiBridge.createServerSnapshot(level, worldData, settings, data, -1.0F);
+        WeatherCoreState next = rollNextState(level, settings, data.getCurrentState(), previousSnapshot);
         data.setPhase(WeatherCorePhase.OMEN);
         data.setNextState(next);
 
@@ -231,6 +233,12 @@ public final class WeatherCoreManager {
                     1.35F);
         }
 
+        WeatherCoreSnapshot currentSnapshot = WeatherCoreApiBridge.createServerSnapshot(level, worldData, settings, data, -1.0F);
+        if (previousSnapshot.phase() != currentSnapshot.phase()) {
+            WeatherCoreApiEvents.firePhaseChange(level, previousSnapshot.phase(), currentSnapshot.phase(), currentSnapshot);
+        }
+        WeatherCoreApiEvents.fireOmenStart(level, currentSnapshot, data.getOmenTicks());
+
         syncStateToAllPlayers(level, worldData, settings, data, data.getCurrentState());
     }
 
@@ -242,7 +250,11 @@ public final class WeatherCoreManager {
         WeatherCoreState previous = data.getCurrentState();
         WeatherCoreState next = data.getNextState();
         if (next == null) {
-            next = rollNextState(level, settings, previous);
+            next = rollNextState(
+                    level,
+                    settings,
+                    previous,
+                    WeatherCoreApiBridge.createServerSnapshot(level, worldData, settings, data, -1.0F));
         }
 
         if (previous == WeatherCoreState.ECLIPSE_MINUTE && data.getEclipseRestoreDayTime() >= 0L) {
@@ -261,6 +273,10 @@ public final class WeatherCoreManager {
             WeatherCoreSavedData data,
             WeatherCoreState state,
             WeatherCoreState previous) {
+        WeatherCoreSnapshot previousSnapshot = data.isInitialized()
+                ? WeatherCoreApiBridge.createServerSnapshot(level, worldData, settings, data, -1.0F)
+                : null;
+
         int totalTicks = resolveTotalTicks(settings, state);
         int omenTicks = resolveOmenTicks(settings, totalTicks);
 
@@ -277,6 +293,19 @@ public final class WeatherCoreManager {
 
         applyWorldStateStart(level, settings, data, state, previous);
         applySwitchBurst(level, settings, state);
+
+        WeatherCoreSnapshot currentSnapshot = WeatherCoreApiBridge.createServerSnapshot(level, worldData, settings, data, -1.0F);
+        if (previousSnapshot != null) {
+            if (!previousSnapshot.stateId().equals(currentSnapshot.stateId())) {
+                WeatherCoreApiEvents.fireStateChange(level, previousSnapshot, currentSnapshot);
+            }
+            if (previousSnapshot.phase() != currentSnapshot.phase()) {
+                WeatherCoreApiEvents.firePhaseChange(level, previousSnapshot.phase(), currentSnapshot.phase(), currentSnapshot);
+            }
+            if (previousSnapshot.sleepDisabled() != currentSnapshot.sleepDisabled()) {
+                WeatherCoreApiEvents.fireSleepLock(level, currentSnapshot.sleepDisabled(), currentSnapshot);
+            }
+        }
 
         syncStateToAllPlayers(level, worldData, settings, data, state);
     }
@@ -295,7 +324,11 @@ public final class WeatherCoreManager {
         return Mth.clamp(capped, MIN_OMEN_TICKS, Math.max(MIN_OMEN_TICKS, totalTicks - 20));
     }
 
-    private static WeatherCoreState rollNextState(ServerLevel level, AshwakeConfig.Settings settings, WeatherCoreState previous) {
+    private static WeatherCoreState rollNextState(
+            ServerLevel level,
+            AshwakeConfig.Settings settings,
+            WeatherCoreState previous,
+            WeatherCoreSnapshot currentSnapshot) {
         RandomSource random = level.getRandom();
         int rareGate = Mth.clamp(settings.weatherCoreRareGatePercent(), 0, 100);
         List<WeatherCoreState> pool;
@@ -305,31 +338,61 @@ public final class WeatherCoreManager {
             pool = WeatherCoreState.normalPool();
         }
 
-        WeatherCoreState picked = weightedPick(random, pool, pool == WeatherCoreState.rarePool());
+        boolean rarePool = pool == WeatherCoreState.rarePool();
+        WeatherCoreState picked = weightedPick(random, level, pool, rarePool, currentSnapshot);
         if (previous != null && picked == previous && pool.size() > 1) {
-            picked = weightedPick(random, pool, pool == WeatherCoreState.rarePool());
+            WeatherCoreState rerolled = weightedPick(random, level, pool, rarePool, currentSnapshot);
+            if (rerolled != previous) {
+                picked = rerolled;
+            }
         }
         return picked;
     }
 
-    private static WeatherCoreState weightedPick(RandomSource random, List<WeatherCoreState> pool, boolean rarePool) {
-        int total = 0;
+    private static WeatherCoreState weightedPick(
+            RandomSource random,
+            ServerLevel level,
+            List<WeatherCoreState> pool,
+            boolean rarePool,
+            WeatherCoreSnapshot currentSnapshot) {
+        List<WeightedState> weightedStates = new ArrayList<>();
+        float totalWeight = 0.0F;
+
         for (WeatherCoreState state : pool) {
-            total += rarePool ? state.rareWeight() : state.normalWeight();
+            ResourceLocation stateId = WeatherCoreApiBridge.toStateId(state);
+            if (!WeatherCoreIntegrationRegistry.canSelect(level, stateId, currentSnapshot)) {
+                continue;
+            }
+
+            float baseWeight = rarePool ? state.rareWeight() : state.normalWeight();
+            float modifiedWeight = WeatherCoreIntegrationRegistry.applyWeightModifiers(level, stateId, baseWeight);
+            if (modifiedWeight <= 0.0F) {
+                continue;
+            }
+
+            weightedStates.add(new WeightedState(state, modifiedWeight));
+            totalWeight += modifiedWeight;
         }
-        if (total <= 0) {
+
+        if (weightedStates.isEmpty() || totalWeight <= 0.0F) {
+            if (currentSnapshot != null && currentSnapshot.stateId() != null) {
+                WeatherCoreState fallbackState = WeatherCoreState.fromId(currentSnapshot.stateId().getPath());
+                if (pool.contains(fallbackState)) {
+                    return fallbackState;
+                }
+            }
             return pool.get(random.nextInt(pool.size()));
         }
 
-        int roll = random.nextInt(total);
-        int cursor = 0;
-        for (WeatherCoreState state : pool) {
-            cursor += rarePool ? state.rareWeight() : state.normalWeight();
+        float roll = random.nextFloat() * totalWeight;
+        float cursor = 0.0F;
+        for (WeightedState weightedState : weightedStates) {
+            cursor += weightedState.weight();
             if (roll < cursor) {
-                return state;
+                return weightedState.state();
             }
         }
-        return pool.get(pool.size() - 1);
+        return weightedStates.get(weightedStates.size() - 1).state();
     }
 
     private static void applyWorldStateStart(
@@ -558,5 +621,8 @@ public final class WeatherCoreManager {
         return BuiltInRegistries.MOB_EFFECT
                 .getHolder(ResourceLocation.withDefaultNamespace(path))
                 .orElseThrow(() -> new IllegalStateException("Missing effect: " + path));
+    }
+
+    private record WeightedState(WeatherCoreState state, float weight) {
     }
 }

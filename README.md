@@ -9,6 +9,7 @@ starting experience around a custom volcano spawn and dynamic world-state system
 - Procedural Ashwake volcano generation with a controlled world spawn.
 - Hub/settlement world bootstrap and placement logic.
 - Weather Core system with rotating state phases, omen timing, and client cache sync.
+- Public Weather Core API (`com.ashwake.api.*`) for cross-mod read/event integration.
 - Intro GUI flow (story + learn-more pages) with responsive layout behavior.
 - Custom entities and renderers (for example `World Core Orb` and `Rune Disc`).
 - HUD and visual state feedback hooks on the client.
@@ -41,6 +42,35 @@ If dependencies or IDE sync become stale:
 
 Core mod settings are defined in `src/main/java/com/ashwake/ashwake/config/AshwakeConfig.java`.
 At runtime, common config values are exposed through NeoForge's normal config pipeline.
+
+## Public API v1
+
+Ashwake exposes a versioned API under `com.ashwake.api` with:
+
+- `AshwakeApi` entry point (`API_VERSION = 1`)
+- immutable `WeatherCoreSnapshot` reads (server and client cache)
+- NeoForge events for state/phase/omen/sleep-lock changes
+- read-only `AshwakeConfigView`
+- optional integration hooks (weight modifiers, selection vetoes, guidance providers)
+
+### Default Weather Core state IDs
+
+Normal pool:
+
+- `ashwake:dawn_blessing`
+- `ashwake:clear_skies`
+- `ashwake:ember_warmth`
+- `ashwake:prosperous_drizzle`
+- `ashwake:tailwind`
+- `ashwake:ashwake_storm`
+- `ashwake:nightfall_lock`
+- `ashwake:dread_fog`
+- `ashwake:gravity_flux`
+
+Rare pool:
+
+- `ashwake:eclipse_minute`
+- `ashwake:skyfracture_pulse`
 
 ## Project Layout
 

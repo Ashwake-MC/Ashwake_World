@@ -1,9 +1,13 @@
 package com.ashwake.ashwake.network;
 
+import com.ashwake.ashwake.config.AshwakeConfig;
+import com.ashwake.ashwake.world.AshwakeWorldData;
 import com.ashwake.ashwake.world.intro.AshwakeIntroManager;
+import com.ashwake.ashwake.world.weather.WeatherCoreApiBridge;
 import com.ashwake.ashwake.world.weather.WeatherCoreClientCache;
 import com.ashwake.ashwake.world.weather.WeatherCoreSavedData;
 import com.ashwake.ashwake.world.weather.WeatherCoreState;
+import net.minecraft.core.BlockPos;
 import java.util.function.ToDoubleFunction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -16,7 +20,7 @@ public final class WeatherCoreNetwork {
     }
 
     public static void onRegisterPayloadHandlers(RegisterPayloadHandlersEvent event) {
-        PayloadRegistrar registrar = event.registrar("3");
+        PayloadRegistrar registrar = event.registrar("4");
         registrar.playToClient(
                 WeatherCoreSyncPayload.TYPE,
                 WeatherCoreSyncPayload.STREAM_CODEC,
@@ -43,7 +47,7 @@ public final class WeatherCoreNetwork {
     }
 
     public static void syncToPlayer(ServerPlayer player, WeatherCoreSavedData data, boolean sleepLocked, float intensity) {
-        PacketDistributor.sendToPlayer(player, toPayload(data, sleepLocked, intensity));
+        PacketDistributor.sendToPlayer(player, toPayload(player, data, sleepLocked, intensity));
     }
 
     public static void sendOpenIntroToPlayer(
@@ -67,9 +71,17 @@ public final class WeatherCoreNetwork {
         PacketDistributor.sendToServer(new IntroGuiClosedPayload(introVersion, dontShowAgain, disableTutorialPopups));
     }
 
-    private static WeatherCoreSyncPayload toPayload(WeatherCoreSavedData data, boolean sleepLocked, float intensity) {
+    private static WeatherCoreSyncPayload toPayload(
+            ServerPlayer player,
+            WeatherCoreSavedData data,
+            boolean sleepLocked,
+            float intensity) {
+        ServerLevel level = player.serverLevel();
+        AshwakeConfig.Settings settings = AshwakeConfig.snapshot();
+        AshwakeWorldData worldData = AshwakeWorldData.get(level);
         WeatherCoreState current = data.getCurrentState();
         WeatherCoreState next = data.getNextState();
+        BlockPos hubCenter = WeatherCoreApiBridge.resolveHubCenter(worldData);
         return new WeatherCoreSyncPayload(
                 current.id(),
                 data.getPhase().id(),
@@ -77,6 +89,12 @@ public final class WeatherCoreNetwork {
                 data.getTotalTicks(),
                 next == null ? "" : next.id(),
                 sleepLocked,
-                intensity);
+                intensity,
+                settings.weatherCoreSafeRadius(),
+                hubCenter,
+                settings.weatherCoreDisableLightningInSafeRadius(),
+                level.getGameTime(),
+                level.isRaining(),
+                level.isThundering());
     }
 }

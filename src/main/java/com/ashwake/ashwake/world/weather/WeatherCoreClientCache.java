@@ -1,6 +1,7 @@
 package com.ashwake.ashwake.world.weather;
 
 import com.ashwake.ashwake.network.WeatherCoreSyncPayload;
+import net.minecraft.core.BlockPos;
 
 public final class WeatherCoreClientCache {
     private static final int OMEN_RAMP_TICKS = 45 * 20;
@@ -13,6 +14,12 @@ public final class WeatherCoreClientCache {
     private static volatile WeatherCoreState nextState = null;
     private static volatile boolean sleepLocked = false;
     private static volatile float intensity = 1.0F;
+    private static volatile int safeRadiusBlocks = 0;
+    private static volatile BlockPos hubCenter = BlockPos.ZERO;
+    private static volatile boolean lightningSuppressedInSafeZone = false;
+    private static volatile long worldTime = 0L;
+    private static volatile boolean isRaining = false;
+    private static volatile boolean isThundering = false;
     private static volatile int omenElapsedTicks = 0;
     private static volatile int switchBurstTicksRemaining = 0;
     private static volatile WeatherCoreState switchBurstState = WeatherCoreState.DAWN_BLESSING;
@@ -33,6 +40,12 @@ public final class WeatherCoreClientCache {
                 : WeatherCoreState.fromId(payload.nextStateId());
         sleepLocked = payload.sleepLocked();
         intensity = Math.max(0.0F, Math.min(1.0F, payload.intensity()));
+        safeRadiusBlocks = Math.max(0, payload.safeRadiusBlocks());
+        hubCenter = payload.hubCenter() == null ? BlockPos.ZERO : payload.hubCenter().immutable();
+        lightningSuppressedInSafeZone = payload.lightningSuppressedInSafeZone();
+        worldTime = payload.worldTime();
+        isRaining = payload.isRaining();
+        isThundering = payload.isThundering();
 
         if (state != previousState) {
             switchBurstState = state;
@@ -46,6 +59,11 @@ public final class WeatherCoreClientCache {
         } else {
             omenElapsedTicks = 0;
         }
+
+        var apiSnapshot = WeatherCoreApiBridge.getClientSnapshot();
+        if (apiSnapshot != null) {
+            WeatherCoreApiEvents.fireClientUpdate(apiSnapshot);
+        }
     }
 
     public static void clientTick() {
@@ -58,6 +76,7 @@ public final class WeatherCoreClientCache {
         if (switchBurstTicksRemaining > 0) {
             switchBurstTicksRemaining--;
         }
+        worldTime++;
     }
 
     public static Snapshot snapshot() {
@@ -76,6 +95,12 @@ public final class WeatherCoreClientCache {
                 nextState,
                 sleepLocked,
                 intensity,
+                safeRadiusBlocks,
+                hubCenter,
+                lightningSuppressedInSafeZone,
+                worldTime,
+                isRaining,
+                isThundering,
                 omenProgress,
                 burstStrength,
                 switchBurstState);
@@ -89,6 +114,12 @@ public final class WeatherCoreClientCache {
             WeatherCoreState nextState,
             boolean sleepLocked,
             float intensity,
+            int safeRadiusBlocks,
+            BlockPos hubCenter,
+            boolean lightningSuppressedInSafeZone,
+            long worldTime,
+            boolean isRaining,
+            boolean isThundering,
             float omenProgress,
             float switchBurstStrength,
             WeatherCoreState switchBurstState) {
